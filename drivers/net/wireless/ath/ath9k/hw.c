@@ -3074,6 +3074,53 @@ void ath9k_hw_gen_timer_start(struct ath_hw *ah,
 }
 EXPORT_SYMBOL(ath9k_hw_gen_timer_start);
 
+#ifdef CPTCFG_RT_WIFI
+void ath9k_hw_gen_timer_start_absolute(struct ath_hw *ah,
+			      struct ath_gen_timer *timer,
+			      u32 trig_timeout,
+			      u32 timer_period)
+{
+	struct ath_gen_timer_table *timer_table = &ah->hw_gen_timers;
+	u32 timer_next;
+
+	BUG_ON(!timer_period);
+
+	set_bit(timer->index, &timer_table->timer_mask.timer_bits);
+
+	timer_next = trig_timeout;
+
+	/*
+	 * Program generic timer registers
+	 */
+	REG_WRITE(ah, gen_tmr_configuration[timer->index].next_addr,
+		 timer_next);
+	REG_WRITE(ah, gen_tmr_configuration[timer->index].period_addr,
+		  timer_period);
+	REG_SET_BIT(ah, gen_tmr_configuration[timer->index].mode_addr,
+		    gen_tmr_configuration[timer->index].mode_mask);
+
+	if (AR_SREV_9462(ah)) {
+		/*
+		 * Starting from AR9462, each generic timer can select which tsf
+		 * to use. But we still follow the old rule, 0 - 7 use tsf and
+		 * 8 - 15  use tsf2.
+		 */
+		if ((timer->index < AR_GEN_TIMER_BANK_1_LEN))
+			REG_CLR_BIT(ah, AR_MAC_PCU_GEN_TIMER_TSF_SEL,
+				       (1 << timer->index));
+		else
+			REG_SET_BIT(ah, AR_MAC_PCU_GEN_TIMER_TSF_SEL,
+				       (1 << timer->index));
+	}
+
+	/* Enable both trigger and thresh interrupt masks */
+	REG_SET_BIT(ah, AR_IMR_S5,
+		(SM(AR_GENTMR_BIT(timer->index), AR_IMR_S5_GENTIMER_THRESH) |
+		SM(AR_GENTMR_BIT(timer->index), AR_IMR_S5_GENTIMER_TRIG)));
+}
+EXPORT_SYMBOL(ath9k_hw_gen_timer_start_absolute);
+#endif
+
 void ath9k_hw_gen_timer_stop(struct ath_hw *ah, struct ath_gen_timer *timer)
 {
 	struct ath_gen_timer_table *timer_table = &ah->hw_gen_timers;

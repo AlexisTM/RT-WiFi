@@ -152,3 +152,10 @@ config ATH9K_HTC_DEBUGFS
 	depends on ATH9K_HTC && DEBUG_FS
 	---help---
 	  Say Y, if you need access to ath9k_htc's statistics.
+
+config RT_WIFI
+	bool "RT-WiFi support"
+	depends on ATH9K
+	default n
+	---help---
+	  Say Y, if you want to support TDMA MAC for your ATH9k driver.

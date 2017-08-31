@@ -172,7 +172,8 @@ static void ath9k_gen_timer_start(struct ath_hw *ah,
 	}
 }
 
-static void ath9k_gen_timer_stop(struct ath_hw *ah, struct ath_gen_timer *timer)
+/* rt-wifi static void ath9k_gen_timer_stop(struct ath_hw *ah, struct ath_gen_timer *timer) */
+void ath9k_gen_timer_stop(struct ath_hw *ah, struct ath_gen_timer *timer)
 {
 	struct ath_gen_timer_table *timer_table = &ah->hw_gen_timers;
 

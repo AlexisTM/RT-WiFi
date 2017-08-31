@@ -661,6 +661,69 @@ static void ath9k_eeprom_release(struct ath_softc *sc)
 	release_firmware(sc->sc_ah->eeprom_blob);
 }
 
+#ifdef CPTCFG_RT_WIFI
+static void test_trigger(void *arg)
+{
+    printk(KERN_DEBUG "test trigger\n");
+}
+
+static void test_thres(void *arg)
+{
+    printk(KERN_DEBUG "test thres\n");
+}
+
+static void ath9k_init_rt_wifi(struct ath_softc *sc)
+{
+	int ret;
+	unsigned int fifo_size = sizeof(struct ath_buf*) * RT_WIFI_KFIFO_SIZE;
+	
+	sc->rt_wifi_enable = 0;
+	ret = kfifo_alloc(&sc->rt_wifi_fifo, fifo_size, GFP_KERNEL);
+	if (ret != 0) {
+		printk(KERN_WARNING "%s: Error in allocating RT_WIFI FIFO %d.\n",
+			__FUNCTION__, ret);
+	}
+	INIT_LIST_HEAD(&(sc->rt_wifi_q));
+	sc->rt_wifi_qcount = 0;
+	spin_lock_init(&sc->rt_wifi_q_lock);
+	spin_lock_init(&sc->rt_wifi_fifo_lock);
+
+	sc->rt_wifi_timer = ath_gen_timer_alloc(sc->sc_ah, test_trigger, test_thres, (void*)sc, 7);
+	sc->rt_wifi_join = 0;
+}
+
+static void ath9k_deinit_rt_wifi(struct ath_softc *sc)
+{
+	struct ath_buf *new_buf;
+
+	sc->rt_wifi_enable = 0;
+
+	/* TODO: Not sure if the deinit is handled properly. */
+	while (true) {
+		new_buf = ath_rt_wifi_get_buf_sta(sc);
+		if (new_buf != NULL) {
+			ath_rt_wifi_tx(sc, new_buf);
+		} else {
+			break;
+		}
+	}
+	while (!list_empty(&sc->rt_wifi_q)) {
+		new_buf = list_first_entry(&sc->rt_wifi_q, struct ath_buf, list);
+		list_del_init(&new_buf->list);
+		ath_rt_wifi_tx(sc, new_buf);
+	}
+
+	if (sc->rt_wifi_timer != NULL) {
+		ath9k_gen_timer_stop(sc->sc_ah, sc->rt_wifi_timer);
+		ath_gen_timer_free(sc->sc_ah, sc->rt_wifi_timer);
+	}
+
+	if (sc->rt_wifi_superframe != NULL) {
+		kfree(sc->rt_wifi_superframe);
+	}
+}
+#endif
+
 static int ath9k_init_softc(u16 devid, struct ath_softc *sc,
 			    const struct ath_bus_ops *bus_ops)
 {
@@ -766,9 +829,12 @@ static int ath9k_init_softc(u16 devid, struct ath_softc *sc,
 	if (ret)
 		goto err_queues;
 
+	/* rt-wifi: Disable Bluetooth co-existence for GENTIMER usage. */
+#ifndef CPTCFG_RT_WIFI
 	ret =  ath9k_init_btcoex(sc);
 	if (ret)
 		goto err_btcoex;
+#endif
 
 	ret = ath9k_init_channels_rates(sc);
 	if (ret)
@@ -777,6 +843,10 @@ static int ath9k_init_softc(u16 devid, struct ath_softc *sc,
 	ath9k_cmn_init_crypto(sc->sc_ah);
 	ath9k_init_misc(sc);
 	ath_fill_led_pin(sc);
+
+#ifdef CPTCFG_RT_WIFI
+	ath9k_init_rt_wifi(sc);
+#endif
 
 	if (common->bus_ops->aspm_init)
 		common->bus_ops->aspm_init(common);
@@ -1058,7 +1128,11 @@ static void ath9k_deinit_softc(struct ath_softc *sc)
 {
 	int i = 0;
 
+#ifdef CPTCFG_RT_WIFI
+	ath9k_deinit_rt_wifi(sc);
+#else
 	ath9k_deinit_btcoex(sc);
+#endif
 
 	for (i = 0; i < ATH9K_NUM_TX_QUEUES; i++)
 		if (ATH_TXQ_SETUP(sc, i))

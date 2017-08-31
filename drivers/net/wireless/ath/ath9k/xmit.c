@@ -662,7 +662,8 @@ static void ath_tx_complete_aggr(struct ath_softc *sc, struct ath_txq *txq,
 		ath9k_queue_reset(sc, RESET_TYPE_TX_ERROR);
 }
 
-static bool bf_is_ampdu_not_probing(struct ath_buf *bf)
+/* rt-wifi static bool bf_is_ampdu_not_probing(struct ath_buf *bf) */
+bool bf_is_ampdu_not_probing(struct ath_buf *bf)
 {
     struct ieee80211_tx_info *info = IEEE80211_SKB_CB(bf->bf_mpdu);
     return bf_isampdu(bf) && !(info->flags & IEEE80211_TX_CTL_RATE_CTRL_PROBE);
@@ -1117,7 +1118,14 @@ static void ath_buf_set_rate(struct ath_softc *sc, struct ath_buf *bf,
 			continue;
 
 		rix = rates[i].idx;
+#ifdef CPTCFG_RT_WIFI
+		if (i == 0) 
+			info->rates[i].Tries = RT_WIFI_NUM_OF_TRIES;
+		else
+			info->rates[i].Tries = 0;
+#else
 		info->rates[i].Tries = rates[i].count;
+#endif
 
 		/*
 		 * Handle RTS threshold for unaggregated HT frames.
@@ -1167,6 +1175,7 @@ static void ath_buf_set_rate(struct ath_softc *sc, struct ath_buf *bf,
 			phy = WLAN_RC_PHY_OFDM;
 
 		info->rates[i].Rate = rate->hw_value;
+
 		if (rate->hw_value_short) {
 			if (rates[i].flags & IEEE80211_TX_RC_USE_SHORT_PREAMBLE)
 				info->rates[i].Rate |= rate->hw_value_short;
@@ -1248,12 +1257,23 @@ static void ath_tx_fill_desc(struct ath_softc *sc, struct ath_buf *bf,
 
 			if (!sc->tx99_state)
 				info.flags = ATH9K_TXDESC_INTREQ;
+#ifdef CPTCFG_RT_WIFI
+			/* rt-wifi: Clear destination mask for avoiding TXERR_FILT. */
+			info.flags |= ATH9K_TXDESC_CLRDMASK;
+	#if (RT_WIFI_ENABLE_ACK == 1)
+			if (tx_info->flags & IEEE80211_TX_CTL_NO_ACK)
+				info.flags |= ATH9K_TXDESC_NOACK;
+	#else
+			info.flags |= ATH9K_TXDESC_NOACK;
+	#endif
+#else
 			if ((tx_info->flags & IEEE80211_TX_CTL_CLEAR_PS_FILT) ||
 			    txq == sc->tx.uapsdq)
 				info.flags |= ATH9K_TXDESC_CLRDMASK;
 
 			if (tx_info->flags & IEEE80211_TX_CTL_NO_ACK)
 				info.flags |= ATH9K_TXDESC_NOACK;
+#endif
 			if (tx_info->flags & IEEE80211_TX_CTL_LDPC)
 				info.flags |= ATH9K_TXDESC_LDPC;
 
@@ -1902,10 +1922,9 @@ static void ath_tx_txqaddbuf(struct ath_softc *sc, struct ath_txq *txq,
 {
 	struct ath_hw *ah = sc->sc_ah;
 	struct ath_common *common = ath9k_hw_common(ah);
-	struct ath_buf *bf, *bf_last;
+	struct ath_buf *bf, *bf_last, *bf_itr;
 	bool puttxbuf = false;
 	bool edma;
-
 	/*
 	 * Insert the frame on the outbound list and
 	 * pass it on to the hardware.
@@ -1914,12 +1933,13 @@ static void ath_tx_txqaddbuf(struct ath_softc *sc, struct ath_txq *txq,
 	if (list_empty(head))
 		return;
 
+#ifndef CPTCFG_RT_WIFI
 	edma = !!(ah->caps.hw_caps & ATH9K_HW_CAP_EDMA);
 	bf = list_first_entry(head, struct ath_buf, list);
 	bf_last = list_entry(head->prev, struct ath_buf, list);
 
 	ath_dbg(common, QUEUE, "qnum: %d, txq depth: %d\n",
-		txq->axq_qnum, txq->axq_depth);
+			txq->axq_qnum, txq->axq_depth);
 
 	if (edma && list_empty(&txq->txq_fifo[txq->txq_headidx])) {
 		list_splice_tail_init(head, &txq->txq_fifo[txq->txq_headidx]);
@@ -1931,8 +1951,8 @@ static void ath_tx_txqaddbuf(struct ath_softc *sc, struct ath_txq *txq,
 		if (txq->axq_link) {
 			ath9k_hw_set_desc_link(ah, txq->axq_link, bf->bf_daddr);
 			ath_dbg(common, XMIT, "link[%u] (%p)=%llx (%p)\n",
-				txq->axq_qnum, txq->axq_link,
-				ito64(bf->bf_daddr), bf->bf_desc);
+					txq->axq_qnum, txq->axq_link,
+					ito64(bf->bf_daddr), bf->bf_desc);
 		} else if (!edma)
 			puttxbuf = true;
 
@@ -1943,7 +1963,7 @@ static void ath_tx_txqaddbuf(struct ath_softc *sc, struct ath_txq *txq,
 		TX_STAT_INC(txq->axq_qnum, puttxbuf);
 		ath9k_hw_puttxbuf(ah, txq->axq_qnum, bf->bf_daddr);
 		ath_dbg(common, XMIT, "TXDP[%u] = %llx (%p)\n",
-			txq->axq_qnum, ito64(bf->bf_daddr), bf->bf_desc);
+				txq->axq_qnum, ito64(bf->bf_daddr), bf->bf_desc);
 	}
 
 	if (!edma || sc->tx99_state) {
@@ -1962,6 +1982,74 @@ static void ath_tx_txqaddbuf(struct ath_softc *sc, struct ath_txq *txq,
 			bf_last->bf_next = NULL;
 		}
 	}
+#else
+	if (sc->rt_wifi_enable == 0) {
+		edma = !!(ah->caps.hw_caps & ATH9K_HW_CAP_EDMA);
+		bf = list_first_entry(head, struct ath_buf, list);
+		bf_last = list_entry(head->prev, struct ath_buf, list);
+
+		ath_dbg(common, QUEUE, "qnum: %d, txq depth: %d\n",
+				txq->axq_qnum, txq->axq_depth);
+
+		if (edma && list_empty(&txq->txq_fifo[txq->txq_headidx])) {
+			list_splice_tail_init(head, &txq->txq_fifo[txq->txq_headidx]);
+			INCR(txq->txq_headidx, ATH_TXFIFO_DEPTH);
+			puttxbuf = true;
+		} else {
+			list_splice_tail_init(head, &txq->axq_q);
+
+			if (txq->axq_link) {
+				ath9k_hw_set_desc_link(ah, txq->axq_link, bf->bf_daddr);
+				ath_dbg(common, XMIT, "link[%u] (%p)=%llx (%p)\n",
+						txq->axq_qnum, txq->axq_link,
+						ito64(bf->bf_daddr), bf->bf_desc);
+			} else if (!edma)
+				puttxbuf = true;
+
+			txq->axq_link = bf_last->bf_desc;
+		}
+
+		if (puttxbuf) {
+			TX_STAT_INC(txq->axq_qnum, puttxbuf);
+			ath9k_hw_puttxbuf(ah, txq->axq_qnum, bf->bf_daddr);
+			ath_dbg(common, XMIT, "TXDP[%u] = %llx (%p)\n",
+					txq->axq_qnum, ito64(bf->bf_daddr), bf->bf_desc);
+		}
+
+		if (!edma || sc->tx99_state) {
+			TX_STAT_INC(txq->axq_qnum, txstart);
+			ath9k_hw_txstart(ah, txq->axq_qnum);
+		}
+
+		if (!internal) {
+			while (bf) {
+				txq->axq_depth++;
+				if (bf_is_ampdu_not_probing(bf))
+					txq->axq_ampdu_depth++;
+
+				bf_last = bf->bf_lastbf;
+				bf = bf_last->bf_next;
+				bf_last->bf_next = NULL;
+			}
+		} 
+	} else if (sc->rt_wifi_enable == 1) {
+		unsigned long flags;
+		spin_lock_irqsave(&sc->rt_wifi_fifo_lock, flags);
+		list_for_each_entry(bf_itr, head, list) {
+			if (kfifo_avail(&sc->rt_wifi_fifo) >=
+					sizeof(struct ath_buf*)) {
+				kfifo_in(&sc->rt_wifi_fifo,
+						&bf_itr,
+						sizeof(struct ath_buf*));
+			} else {
+				RT_WIFI_DEBUG(
+					"KFIFO is out of space!! If this"
+				        "happens, investigate RT_WIFI_KFIFO_SIZE\n");
+			}
+		}
+		spin_unlock_irqrestore(&sc->rt_wifi_fifo_lock, flags);
+	}
+#endif
 }
 
 static void ath_tx_send_normal(struct ath_softc *sc, struct ath_txq *txq,
@@ -1971,6 +2059,19 @@ static void ath_tx_send_normal(struct ath_softc *sc, struct ath_txq *txq,
 	struct ath_frame_info *fi = get_frame_info(skb);
 	struct list_head bf_head;
 	struct ath_buf *bf = fi->bf;
+
+	/* rt-wifi */
+	struct ieee80211_hdr *hdr;
+
+	hdr = (struct ieee80211_hdr*)skb->data;
+	RT_WIFI_DEBUG( "New destination address: %X:%X:%X:%X:%X:%X\n"
+				, hdr->addr1[0]
+				, hdr->addr1[1]
+				, hdr->addr1[2]
+				, hdr->addr1[3]
+				, hdr->addr1[4]
+				, hdr->addr1[5]);
+	/* eom */
 
 	INIT_LIST_HEAD(&bf_head);
 	list_add_tail(&bf->list, &bf_head);
@@ -2071,6 +2172,10 @@ static struct ath_buf *ath_tx_setup_buffer(struct ath_softc *sc,
 	}
 
 	ATH_TXBUF_RESET(bf);
+
+#ifdef CPTCFG_RT_WIFI
+	bf->qnum = txq->axq_qnum;
+#endif
 
 	if (tid) {
 		fragno = le16_to_cpu(hdr->seq_ctrl) & IEEE80211_SCTL_FRAG;

@@ -120,6 +120,9 @@ static struct ath_buf *ath9k_beacon_generate(struct ieee80211_hw *hw,
 	struct ieee80211_tx_info *info;
 	struct ieee80211_mgmt *mgmt_hdr;
 	int cabq_depth;
+#ifdef CPTCFG_RT_WIFI
+	unsigned char *tmp, *src;
+#endif
 
 	if (avp->av_bcbuf == NULL)
 		return NULL;
@@ -137,6 +140,30 @@ static struct ath_buf *ath9k_beacon_generate(struct ieee80211_hw *hw,
 	skb = ieee80211_beacon_get(hw, vif);
 	if (skb == NULL)
 		return NULL;
+
+#ifdef CPTCFG_RT_WIFI
+	/* Append TDMA information to a beacon frame by vendor specific info. */
+	if (sc->rt_wifi_enable == 1) {
+		sc->rt_wifi_bc_tsf += RT_WIFI_BEACON_INTVAL;
+		sc->rt_wifi_bc_asn +=
+			RT_WIFI_BEACON_INTVAL / sc->rt_wifi_slot_len;
+
+		tmp = skb_put(skb, RT_WIFI_BEACON_VEN_EXT_SIZE);
+		tmp[0] = RT_WIFI_BEACON_TAG;    /* Tag number for Vendor Specific Info */
+		tmp[1] = 0x0F;	  /* Lengh of tag (exclude these two bytes) */
+
+		src = (unsigned char *)(&sc->rt_wifi_bc_asn);
+		memcpy((tmp+2), src, sizeof(int));
+
+		src = (unsigned char *)(&sc->rt_wifi_bc_tsf);
+		memcpy((tmp+6), src, sizeof(u64));
+
+		*(tmp+14) = RT_WIFI_TIME_SLOT_LEN;
+
+		src = (unsigned char *)(&sc->rt_wifi_superframe_size);
+		memcpy((tmp+15), src, sizeof(u16));
+	}
+#endif
 
 	bf->bf_mpdu = skb;
 
@@ -186,8 +213,13 @@ static struct ath_buf *ath9k_beacon_generate(struct ieee80211_hw *hw,
 			ath_draintxq(sc, cabq);
 		}
 	}
-
+#ifdef CPTCFG_RT_WIFI
+	#define RT_WIFI_BEACON_SPEED_24MBPS 4
+	/* May change beacon data rate here. */
+	ath9k_beacon_setup(sc, vif, bf, RT_WIFI_BEACON_SPEED_24MBPS);
+#else
 	ath9k_beacon_setup(sc, vif, bf, info->control.rates[0].idx);
+#endif
 
 	if (skb)
 		ath_tx_cabq(hw, vif, skb);
@@ -318,6 +350,7 @@ void ath9k_beacon_tasklet(unsigned long data)
 	bool edma = !!(ah->caps.hw_caps & ATH9K_HW_CAP_EDMA);
 	int slot;
 
+
 	if (test_bit(SC_OP_HW_RESET, &sc->sc_flags)) {
 		ath_dbg(common, RESET,
 			"reset work is pending, skip beaconing now\n");
@@ -408,6 +441,12 @@ void ath9k_beacon_tasklet(unsigned long data)
 		/* NB: cabq traffic should already be queued and primed */
 		ath9k_hw_puttxbuf(ah, sc->beacon.beaconq, bf->bf_daddr);
 
+#ifdef CPTCFG_RT_WIFI
+		REG_SET_BIT(ah, AR_DIAG_SW, AR_DIAG_FORCE_CH_IDLE_HIGH);
+		REG_SET_BIT(ah, AR_DIAG_SW, AR_DIAG_IGNORE_VIRT_CS);
+		REG_SET_BIT(ah, AR_D_GBL_IFS_MISC, AR_D_GBL_IFS_MISC_IGNORE_BACKOFF); 
+#endif
+
 		if (!edma)
 			ath9k_hw_txstart(ah, sc->beacon.beaconq);
 	}
@@ -459,6 +498,16 @@ static void ath9k_beacon_config_ap(struct ath_softc *sc,
 		nexttbtt, intval, conf->beacon_interval);
 
 	ath9k_beacon_init(sc, nexttbtt, intval, true);
+
+#ifdef CPTCFG_RT_WIFI
+	if(sc->rt_wifi_timer == NULL) {
+		RT_WIFI_DEBUG("No timer is allocated.\n");
+	} else {
+		RT_WIFI_DEBUG("AP timer starts.\n");
+		ath_rt_wifi_ap_start_timer(sc, intval, nexttbtt);
+		sc->rt_wifi_enable = 1;
+	}
+#endif
 }
 
 /*

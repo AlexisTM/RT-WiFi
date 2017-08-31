@@ -819,6 +819,10 @@ void ieee80211_send_nullfunc(struct ieee80211_local *local,
 	struct ieee80211_hdr_3addr *nullfunc;
 	struct ieee80211_if_managed *ifmgd = &sdata->u.mgd;
 
+  /* rt-wifi: Debug */
+  printk(KERN_DEBUG "RT_WIFI: %s\n", __FUNCTION__);
+  /* eom */
+
 	skb = ieee80211_nullfunc_get(&local->hw, &sdata->vif);
 	if (!skb)
 		return;
@@ -1842,7 +1846,10 @@ static void ieee80211_mgd_probe_ap_send(struct ieee80211_sub_if_data *sdata)
 
 	if (sdata->local->hw.flags & IEEE80211_HW_REPORTS_TX_ACK_STATUS) {
 		ifmgd->nullfunc_failed = false;
-		ieee80211_send_nullfunc(sdata->local, sdata, 0);
+		/* rt-wifi: Disable Null data frame. */
+		/* TODO: Should verify this is worth to do in the new driver */
+		/* ieee80211_send_nullfunc(sdata->local, sdata, 0); */
+		/* eom */
 	} else {
 		int ssid_len;
 

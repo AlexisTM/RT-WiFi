@@ -489,8 +489,9 @@ void ath9k_tasklet(unsigned long data)
 			ath_tx_tasklet(sc);
 	}
 
+#ifndef CPTCFG_RT_WIFI
 	ath9k_btcoex_handle_interrupt(sc, status);
-
+#endif
 	/* re-enable hardware interrupt */
 	ath9k_hw_enable_interrupts(ah);
 out:
@@ -500,6 +501,7 @@ out:
 
 irqreturn_t ath_isr(int irq, void *dev)
 {
+#ifndef CPTCFG_RT_WIFI
 #define SCHED_INTR (				\
 		ATH9K_INT_FATAL |		\
 		ATH9K_INT_BB_WATCHDOG |		\
@@ -512,8 +514,23 @@ irqreturn_t ath_isr(int irq, void *dev)
 		ATH9K_INT_BMISS |		\
 		ATH9K_INT_CST |			\
 		ATH9K_INT_TSFOOR |		\
-		ATH9K_INT_GENTIMER |		\
+		ATH9K_INT_GENTIMER|		\
 		ATH9K_INT_MCI)
+#else
+#define SCHED_INTR (				\
+		ATH9K_INT_FATAL |		\
+		ATH9K_INT_BB_WATCHDOG |		\
+		ATH9K_INT_RXORN |		\
+		ATH9K_INT_RXEOL |		\
+		ATH9K_INT_RX |			\
+		ATH9K_INT_RXLP |		\
+		ATH9K_INT_RXHP |		\
+		ATH9K_INT_TX |			\
+		ATH9K_INT_BMISS |		\
+		ATH9K_INT_CST |			\
+		ATH9K_INT_TSFOOR |		\
+		ATH9K_INT_MCI)
+#endif
 
 	struct ath_softc *sc = dev;
 	struct ath_hw *ah = sc->sc_ah;
@@ -530,7 +547,6 @@ irqreturn_t ath_isr(int irq, void *dev)
 		return IRQ_NONE;
 
 	/* shared irq, not for us */
-
 	if (!ath9k_hw_intrpend(ah))
 		return IRQ_NONE;
 
@@ -548,6 +564,7 @@ irqreturn_t ath_isr(int irq, void *dev)
 	ath9k_hw_getisr(ah, &status);	/* NB: clears ISR too */
 	status &= ah->imask;	/* discard unasked-for bits */
 
+
 	/*
 	 * If there are no status bits set, then this interrupt was not
 	 * for me (should have been caught above).
@@ -560,7 +577,6 @@ irqreturn_t ath_isr(int irq, void *dev)
 
 	if (status & SCHED_INTR)
 		sched = true;
-
 	/*
 	 * If a FATAL or RXORN interrupt is received, we have to reset the
 	 * chip immediately.
@@ -599,12 +615,17 @@ irqreturn_t ath_isr(int irq, void *dev)
 		ath9k_hw_set_interrupts(ah);
 	}
 
+#ifdef CPTCFG_RT_WIFI
+	if (status & ATH9K_INT_GENTIMER) {
+		ath9k_hw_disable_interrupts(ah);
+		ath_rt_wifi_tasklet(sc);
+		ath9k_hw_enable_interrupts(ah);
+	}
+#endif
 	if (!(ah->caps.hw_caps & ATH9K_HW_CAP_AUTOSLEEP))
 		if (status & ATH9K_INT_TIM_TIMER) {
 			if (ATH_DBG_WARN_ON_ONCE(sc->ps_idle))
 				goto chip_reset;
-			/* Clear RxAbort bit so that we can
-			 * receive frames */
 			ath9k_setpower(sc, ATH9K_PM_AWAKE);
 			spin_lock(&sc->sc_pm_lock);
 			ath9k_hw_setrxabort(sc->sc_ah, 0);
@@ -808,6 +829,22 @@ static void ath9k_tx(struct ieee80211_hw *hw,
 	txctl.txq = sc->tx.txq_map[skb_get_queue_mapping(skb)];
 	txctl.sta = control->sta;
 
+#ifdef CPTCFG_RT_WIFI
+	/* rt-wifi: Disable probe response. */
+	if (ieee80211_is_probe_resp(hdr->frame_control)) {
+		if(rt_wifi_authorized_sta(hdr->addr1) == false) {
+			RT_WIFI_DEBUG("Unauthorized destination address: %X:%X:%X:%X:%X:%X\n"
+				, hdr->addr1[0]
+				, hdr->addr1[1]
+				, hdr->addr1[2]
+				, hdr->addr1[3]
+				, hdr->addr1[4]
+				, hdr->addr1[5]);
+			
+			goto exit;
+		}
+	}
+#endif
 	ath_dbg(common, XMIT, "transmitting packet, skb: %p\n", skb);
 
 	if (ath_tx_start(hw, skb, &txctl) != 0) {
@@ -1268,9 +1305,14 @@ static int ath9k_config(struct ieee80211_hw *hw, u32 changed)
 		sc->ps_idle = !!(conf->flags & IEEE80211_CONF_IDLE);
 		if (sc->ps_idle) {
 			ath_cancel_work(sc);
+#ifndef CPTCFG_RT_WIFI
 			ath9k_stop_btcoex(sc);
+#endif
 		} else {
+#ifndef CPTCFG_RT_WIFI
 			ath9k_start_btcoex(sc);
+#endif
+
 			/*
 			 * The chip needs a reset to properly wake up from
 			 * full sleep
@@ -1453,6 +1495,14 @@ static int ath9k_conf_tx(struct ieee80211_hw *hw,
 	qi.tqi_cwmin = params->cw_min;
 	qi.tqi_cwmax = params->cw_max;
 	qi.tqi_burstTime = params->txop * 32;
+
+#ifdef CPTCFG_RT_WIFI
+	#if RT_WIFI_ENABLE_COEX == 1
+	qi.tqi_aifs = 1;
+	qi.tqi_cwmin = 0;
+	qi.tqi_cwmax = 0;
+	#endif
+#endif
 
 	ath_dbg(common, CONFIG,
 		"Configure tx [queue/halq] [%d/%d], aifs: %d, cw_min: %d, cw_max: %d, txop: %d\n",
@@ -2330,7 +2380,9 @@ static int ath9k_resume(struct ieee80211_hw *hw)
 	}
 
 	ath_restart_work(sc);
+#ifndef CPTCFG_RT_WIFI
 	ath9k_start_btcoex(sc);
+#endif
 
 	ath9k_ps_restore(sc);
 	mutex_unlock(&sc->mutex);

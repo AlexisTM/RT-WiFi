@@ -1417,8 +1417,9 @@ int ath_rx_tasklet(struct ath_softc *sc, int flush, bool hp)
 		else
 			bf = ath_get_next_rx_buf(sc, &rs);
 
-		if (!bf)
+		if (!bf) {
 			break;
+		}
 
 		skb = bf->bf_mpdu;
 		if (!skb)
@@ -1440,6 +1441,7 @@ int ath_rx_tasklet(struct ath_softc *sc, int flush, bool hp)
 						 &decrypt_error, tsf);
 		if (retval)
 			goto requeue_drop_frag;
+
 
 		/* Ensure we always have an skb to requeue once we are done
 		 * processing the current buffer's skb */
@@ -1527,6 +1529,26 @@ int ath_rx_tasklet(struct ath_softc *sc, int flush, bool hp)
 
 		ath9k_apply_ampdu_details(sc, &rs, rxs);
 
+
+#ifdef CPTCFG_RT_WIFI
+		if (rs.is_mybeacon) {
+			if ((ah->opmode == NL80211_IFTYPE_STATION)) {
+				if (sc->rt_wifi_enable == 0) {
+					ath_rt_wifi_rx_beacon(sc, skb);
+				} else {
+					u64 local_tsf = ath9k_hw_gettsf64(ah);
+					u64 cur_virt_tsf = sc->rt_wifi_virt_start_tsf + (sc->rt_wifi_asn * sc->rt_wifi_slot_len);
+					s64 diff = (cur_virt_tsf - local_tsf);
+					s64 k_ap_restart_diff_offset = 200000;
+					if (diff > k_ap_restart_diff_offset) {
+						RT_WIFI_DEBUG("Restart station timer, L: %llu, V: %llu\n", local_tsf, cur_virt_tsf);
+						ath9k_gen_timer_stop(sc->sc_ah, sc->rt_wifi_timer);
+						ath_rt_wifi_rx_beacon(sc, skb);
+					}
+				}
+			}
+		}
+#endif
 		ieee80211_rx(hw, skb);
 
 requeue_drop_frag:
